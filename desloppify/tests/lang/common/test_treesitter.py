@@ -484,6 +484,60 @@ class TestDepGraphBuilder:
         assert str(pkg_file) in main_imports
         reset_import_cache()
 
+    def test_php_dep_graph_with_relative_file_list(self, tmp_path):
+        """PHP file lists are relative to the scan root; edges must still resolve.
+
+        Regression: resolved imports were normalised to absolute paths while the
+        graph was keyed by the relative names from the file finder, so every
+        edge was dropped and each file looked orphaned.
+        """
+        from desloppify.languages._framework.treesitter.imports.resolver_cache import (
+            reset_import_cache,
+        )
+        from desloppify.languages._framework.treesitter.imports.graph import (
+            ts_build_dep_graph,
+        )
+        from desloppify.languages._framework.treesitter.specs.compiled import PHP_SPEC
+
+        reset_import_cache()
+
+        (tmp_path / "composer.json").write_text(
+            '{"autoload": {"psr-4": {"App\\\\": "app/"}}}'
+        )
+        services = tmp_path / "app" / "Services"
+        http = tmp_path / "app" / "Http"
+        services.mkdir(parents=True)
+        http.mkdir(parents=True)
+
+        (services / "Greeter.php").write_text(
+            "<?php\nnamespace App\\Services;\n"
+            "class Greeter { public function hi(): string { return 'hi'; } }\n"
+        )
+        (http / "GreeterController.php").write_text(
+            "<?php\nnamespace App\\Http;\nuse App\\Services\\Greeter;\n"
+            "class GreeterController { public function show(): string"
+            " { return (new Greeter())->hi(); } }\n"
+        )
+
+        graph = ts_build_dep_graph(
+            tmp_path,
+            PHP_SPEC,
+            ["app/Services/Greeter.php", "app/Http/GreeterController.php"],
+        )
+
+        assert set(graph) == {
+            "app/Services/Greeter.php",
+            "app/Http/GreeterController.php",
+        }
+        assert graph["app/Http/GreeterController.php"]["imports"] == {
+            "app/Services/Greeter.php"
+        }
+        assert graph["app/Services/Greeter.php"]["importers"] == {
+            "app/Http/GreeterController.php"
+        }
+        assert graph["app/Services/Greeter.php"]["importer_count"] == 1
+        reset_import_cache()
+
     def test_no_import_query_returns_empty(self, tmp_path):
         from desloppify.languages._framework.treesitter.imports.graph import (
             ts_build_dep_graph,

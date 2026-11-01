@@ -31,15 +31,27 @@ def ts_build_dep_graph(
     query = _make_query(language, spec.import_query)
 
     scan_path = str(path.resolve())
-    file_set = set(file_list)
     graph: dict[str, dict[str, Any]] = {}
+
+    # File lists are usually relative to the scan root (e.g. "app/Services/Foo.php")
+    # while resolved imports are normalised to absolute paths below. Without a
+    # common form every edge is dropped and every file looks orphaned, so map
+    # absolute path -> original graph key and match on that instead.
+    abs_by_key: dict[str, str] = {}
+    for f in file_list:
+        abs_f = f if os.path.isabs(f) else os.path.join(scan_path, f)
+        abs_by_key[f] = os.path.normpath(os.path.abspath(abs_f))
+
+    key_by_abs: dict[str, str] = {abs_path: key for key, abs_path in abs_by_key.items()}
 
     # Initialize all files in the graph.
     for f in file_list:
         graph[f] = {"imports": set(), "importers": set()}
 
     for filepath in file_list:
-        cached = get_or_parse_tree(filepath, parser, spec.grammar)
+        # Parse the absolute path: relative entries would otherwise be read
+        # relative to the process CWD instead of the scan root.
+        cached = get_or_parse_tree(abs_by_key[filepath], parser, spec.grammar)
         if cached is None:
             continue
         _source, tree = cached
@@ -78,14 +90,17 @@ def ts_build_dep_graph(
             # Normalize to absolute path.
             if not os.path.isabs(resolved):
                 resolved = os.path.normpath(os.path.join(scan_path, resolved))
+            else:
+                resolved = os.path.normpath(resolved)
 
             # Only track edges within the scanned file set.
-            if resolved not in file_set:
+            target = key_by_abs.get(resolved)
+            if target is None:
                 continue
 
-            graph[filepath]["imports"].add(resolved)
-            if resolved in graph:
-                graph[resolved]["importers"].add(filepath)
+            graph[filepath]["imports"].add(target)
+            if target in graph:
+                graph[target]["importers"].add(filepath)
 
     # Finalize: add counts.
     for data in graph.values():
